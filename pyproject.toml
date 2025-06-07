@@ -1,0 +1,10 @@
+[project]
+name = "faster-hls"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "joblib>=1.5.1",
+    "scipy>=1.15.3",
+]
