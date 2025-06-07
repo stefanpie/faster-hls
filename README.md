@@ -4,8 +4,8 @@ This repository tracks my experiments on reducing Vitis HLS runtime.
 
 So far, the two most effective techniques are:
 
-1. **Using an in-memory file system** for the project workspace.  
-2. **Preloading the mimalloc allocator** (with some optional tuning).
+1. **Using an in-memory file system** for the design project workspace.  
+2. **Using the mimalloc memory allocator** (with some optional tuning).
 
 ## Current Results  
 
