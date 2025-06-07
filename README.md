@@ -12,10 +12,10 @@ So far, the two most effective techniques are:
 
 | Configuration | Mean Runtime | Relative Speed |
 |---------------|-------------:|---------------:|
-| SSD (`/usr/scratch`) | 240 s | 1.00× |
-| In-memory file system | 220 s | 0.91× |
-| In-memory FS + mimalloc | 180 s | 0.75× |
-| In-memory FS + mimalloc (`MIMALLOC_PURGE_DELAY=200`) | **155 s** | **0.64×** |
+| SSD (`/usr/scratch`) | ~240 s | 1.00× |
+| In-memory file system | ~220 s | 0.91× |
+| In-memory FS + mimalloc | ~180 s | 0.75× |
+| In-memory FS + mimalloc (`MIMALLOC_PURGE_DELAY=200`) | **~155 s** | **0.64×** |
 
 These results are from 64 runs per configuration, standard deviation < 1 s.
 
