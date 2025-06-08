@@ -1,0 +1,6 @@
+read_verilog -sv vexriscv.demo.GenFull.v
+synth_xilinx -family xc7 -abc9 -json design.json -edif design.edif -blif design.blif
+tee -o stat.json stat -json
+write_table table.txt
+write_rtlil design.rtlil
+write_verilog design__out.v

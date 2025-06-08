@@ -1,18 +1,38 @@
 import datetime
+import json
 import os
+import shlex
 import shutil
 import statistics
 import subprocess
 import time
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from pprint import pp
 from tempfile import TemporaryDirectory
-from typing import Self
+from typing import Any, Callable, Optional, Protocol, Self, Union
 
 from joblib import Parallel, delayed
 from scipy import stats
+
+
+# unwrap function for Optional types
+def unwrap[T](value: Optional[T]) -> T:
+    if value is None:
+        raise ValueError("Value is None")
+    return value
+
+
+def auto_find_bin(bin_name: str) -> Path:
+    bin_match = shutil.which(bin_name)
+    bin_str = unwrap(bin_match)
+    bin_path = Path(bin_str)
+    if not bin_path.exists():
+        raise FileNotFoundError(f"Binary {bin_name} not found at {bin_path}")
+    if not bin_path.is_file():
+        raise FileNotFoundError(f"Binary {bin_name} is not a file at {bin_path}")
+    return bin_path
 
 
 @dataclass
@@ -34,6 +54,9 @@ class TestDesign:
 def run_vitis_hls(
     tcl_fp: Path, vitis_hls_bin: Path, cwd: Path, env: dict[str, str] | None = None
 ) -> float:
+    if not tcl_fp.exists():
+        raise FileNotFoundError(f"TCL file {tcl_fp} does not exist.")
+
     args = [
         str(vitis_hls_bin),
         str(tcl_fp),
@@ -61,7 +84,119 @@ def run_vitis_hls(
     return dt
 
 
-def run_on_disk(test_design: TestDesign, work_dir: Path) -> float:
+def run_vivado(
+    tcl_fp: Path, vivado_bin: Path, cwd: Path, env: dict[str, str] | None = None
+) -> float:
+    if not tcl_fp.exists():
+        raise FileNotFoundError(f"TCL file {tcl_fp} does not exist.")
+
+    args = [
+        str(vivado_bin),
+        "-mode",
+        "batch",
+        "-source",
+        str(tcl_fp),
+    ]
+
+    env_for_process = os.environ.copy()
+    if env is not None and len(env) > 0:
+        for k, v in env.items():
+            env_for_process[k] = v
+
+    t0 = time.time()
+    p = subprocess.run(
+        args,
+        cwd=cwd,
+        env=env_for_process,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    t1 = time.time()
+
+    if p.returncode != 0:
+        raise RuntimeError(f"Vivado failed with return code {p.returncode}")
+
+    dt = t1 - t0
+    return dt
+
+
+def run_vtr(
+    vtr_bin: Path, vtr_run_fp: Path, cwd: Path, env: dict[str, str] | None = None
+) -> float:
+    if not vtr_run_fp.exists():
+        raise FileNotFoundError(f"VTR run file {vtr_run_fp} does not exist.")
+
+    vtr_run = vtr_run_fp.read_text().strip()
+    args = shlex.split(vtr_run)
+    assert args[0] == "$VTR_BIN", "First argument must be $VTR_BIN"
+    args[0] = str(vtr_bin)
+
+    env_for_process = os.environ.copy()
+    if env is not None and len(env) > 0:
+        for k, v in env.items():
+            env_for_process[k] = v
+
+    t0 = time.time()
+    p = subprocess.run(
+        args,
+        cwd=cwd,
+        env=env_for_process,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    t1 = time.time()
+
+    if p.returncode != 0:
+        raise RuntimeError(f"VTR failed with return code {p.returncode}")
+
+    dt = t1 - t0
+    return dt
+
+
+def run_yosys(
+    yosys_script_fp: Path,
+    yosys_bin: Path,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+) -> float:
+    if not yosys_script_fp.exists():
+        raise FileNotFoundError(f"Yosys script {yosys_script_fp} does not exist.")
+
+    args = [
+        str(yosys_bin),
+        "-s",
+        str(yosys_script_fp),
+        "--logfile",
+        "yosys.log",
+    ]
+
+    env_for_process = os.environ.copy()
+    if env is not None and len(env) > 0:
+        for k, v in env.items():
+            env_for_process[k] = v
+
+    t0 = time.time()
+    p = subprocess.run(
+        args,
+        cwd=cwd,
+        env=env_for_process,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    t1 = time.time()
+
+    if p.returncode != 0:
+        raise RuntimeError(f"Yosys failed with return code {p.returncode}")
+
+    dt = t1 - t0
+    return dt
+
+
+class TToolRun(Protocol):
+    def __call__(self, cwd: Path, env: Optional[dict[str, str]] = None) -> float: ...
+
+
+def run_on_disk(tool_fn: TToolRun, test_design: TestDesign, work_dir: Path) -> float:
     if not work_dir.exists():
         raise FileNotFoundError(f"Work directory {work_dir} does not exist.")
     iso_timestamp: str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -70,15 +205,12 @@ def run_on_disk(test_design: TestDesign, work_dir: Path) -> float:
     ) as tmpdir:
         temp_fp = Path(tmpdir)
         test_design_in_temp = test_design.copy_to_dir(temp_fp)
-        dt = run_vitis_hls(
-            tcl_fp=test_design_in_temp.design_dir / "hls_run.tcl",
-            vitis_hls_bin="vitis_hls",
-            cwd=test_design_in_temp.design_dir,
-        )
+        dt = tool_fn(cwd=test_design_in_temp.design_dir, env=None)
     return dt
 
 
 def run_in_memory(
+    tool_fn: TToolRun,
     test_design: TestDesign,
 ) -> float:
     iso_timestamp: str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -87,15 +219,13 @@ def run_in_memory(
     ) as tmpdir:
         temp_fp = Path(tmpdir)
         test_design_in_temp = test_design.copy_to_dir(temp_fp)
-        dt = run_vitis_hls(
-            tcl_fp=test_design_in_temp.design_dir / "hls_run.tcl",
-            vitis_hls_bin="vitis_hls",
-            cwd=test_design_in_temp.design_dir,
-        )
+        dt = tool_fn(cwd=test_design_in_temp.design_dir, env=None)
+
     return dt
 
 
 def run_in_memory_and_use_mimalloc(
+    tool_fn: TToolRun,
     test_design: TestDesign,
     mimalloc_so_fp: Path,
 ) -> float:
@@ -105,9 +235,7 @@ def run_in_memory_and_use_mimalloc(
     ) as tmpdir:
         temp_fp = Path(tmpdir)
         test_design_in_temp = test_design.copy_to_dir(temp_fp)
-        dt = run_vitis_hls(
-            tcl_fp=test_design_in_temp.design_dir / "hls_run.tcl",
-            vitis_hls_bin="vitis_hls",
+        dt = tool_fn(
             cwd=test_design_in_temp.design_dir,
             env={
                 "LD_PRELOAD": str(mimalloc_so_fp),
@@ -122,9 +250,12 @@ def run_in_memory_and_use_mimalloc(
 class Stats:
     mean: float
     std: float
+    var: float
     median: float
     p25: float
     p75: float
+    p05: float
+    p95: float
     min_time: float
     max_time: float
 
@@ -132,8 +263,11 @@ class Stats:
 def compute_stats(times: list[float]) -> Stats:
     mean = statistics.mean(times)
     std = statistics.stdev(times)
+    var = statistics.variance(times)
     p25 = statistics.quantiles(times, n=4)[0]  # 25th percentile
     p75 = statistics.quantiles(times, n=4)[2]  # 75th percentile
+    p05 = statistics.quantiles(times, n=20)[1]  # 5th percentile
+    p95 = statistics.quantiles(times, n=20)[18]  # 95th percentile
     median = statistics.median(times)
 
     min_time = min(times)
@@ -142,12 +276,46 @@ def compute_stats(times: list[float]) -> Stats:
     return Stats(
         mean=mean,
         std=std,
+        var=var,
         median=median,
         p25=p25,
         p75=p75,
+        p05=p05,
+        p95=p95,
         min_time=min_time,
         max_time=max_time,
     )
+
+
+@dataclass
+class ExpData:
+    name: str
+    times: list[float]
+    stats: Stats
+    tags: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            "name": self.name,
+            "tags": self.tags,
+            "times": self.times,
+            "mean": self.stats.mean,
+            "std": self.stats.std,
+            "var": self.stats.var,
+            "median": self.stats.median,
+            "p25": self.stats.p25,
+            "p75": self.stats.p75,
+            "p05": self.stats.p05,
+            "p95": self.stats.p95,
+            "min_time": self.stats.min_time,
+            "max_time": self.stats.max_time,
+        }
+
+    def to_json_str(self) -> str:
+        return json.dumps(self.to_dict(), indent=4)
+
+    def to_json_file(self, fp: Path) -> None:
+        fp.write_text(self.to_json_str())
 
 
 if __name__ == "__main__":
@@ -155,58 +323,114 @@ if __name__ == "__main__":
 
     DIR_CURRENT = Path(__file__).parent
 
-    WORK_DIR = DIR_CURRENT / "work_dir"
-    if not WORK_DIR.exists():
-        WORK_DIR.mkdir(parents=True)
+    # TEST_DESIGN_DIR = DIR_CURRENT / "test_design__simple"
+    # test_design = TestDesign(design_dir=TEST_DESIGN_DIR)
 
-    TEST_DESIGN_DIR = DIR_CURRENT / "test_design__simple"
-    test_design = TestDesign(design_dir=TEST_DESIGN_DIR)
+    TEST_DESIGNS_DIR = DIR_CURRENT / "test_designs"
+
+    # test_projects/vitis_hls__nesting
+    # test_projects/vitis_hls__simple
+    # test_projects/vivado__simple
+    # test_projects/vtr__mcnc_big
+    # test_projects/vtr__mcnc_big_search
+    # test_projects/vtr__mcnc_simple
+    # test_projects/yosys__complex
+    # test_projects/yosys__simple
+
+    test_designs: dict[str, list[TestDesign]] = {}
+    for design_dir in TEST_DESIGNS_DIR.iterdir():
+        if design_dir.is_dir():
+            prefix = design_dir.name.split("__")[0]
+            if prefix not in test_designs:
+                test_designs[prefix] = []
+            test_designs[prefix].append(TestDesign(design_dir=design_dir))
+    print("Available test designs:")
+    pp(test_designs)
+
+    BIN_VTR = DIR_CURRENT / "tools" / "vpr"
+    BIN_VITIS_HLS = auto_find_bin("vitis_hls")
+    BIN_VIVADO = auto_find_bin("vivado")
+    BIN_YOSYS = auto_find_bin("yosys")
 
     N_SAMPLES = 32
     N_PARALLEL = 32
 
-    times_mem = Parallel(
-        n_jobs=N_PARALLEL,
-        backend="multiprocessing",
-        verbose=10,
-    )(
-        delayed(run_in_memory)(d)
-        for d in [deepcopy(test_design) for _ in range(N_SAMPLES)]
-    )
-    stats_mem = compute_stats(times_mem)
-    print(f"In-Memory Stats:\n{stats_mem}")
+    WORK_DIR = DIR_CURRENT / "work_dir"
+    if not WORK_DIR.exists():
+        WORK_DIR.mkdir(parents=True)
 
-    times_mem_mimalloc = Parallel(
-        n_jobs=N_PARALLEL,
-        backend="multiprocessing",
-        verbose=10,
-    )(
-        delayed(run_in_memory_and_use_mimalloc)(d, MIMALLOC_SO_FP)
-        for d in [deepcopy(test_design) for _ in range(N_SAMPLES)]
-    )
-    stats_mem_mimalloc = compute_stats(times_mem_mimalloc)
-    print(f"In-Memory with mimalloc Stats:\n{stats_mem_mimalloc}")
+    RESULTS_DIR = DIR_CURRENT / "results"
+    if not RESULTS_DIR.exists():
+        RESULTS_DIR.mkdir(parents=True)
 
-    # times_disk = Parallel(
-    #     n_jobs=N_PARALLEL,
-    #     backend="multiprocessing",
-    #     verbose=10,
-    # )(
-    #     delayed(run_on_disk)(d, WORK_DIR)
-    #     for d in [deepcopy(test_design) for _ in range(N_SAMPLES)]
-    # )
-    # stats_disk = compute_stats(times_disk)
-    # print(f"On-Disk Stats:\n{stats_disk}")
+    TOOLS_TO_TEST = ["vtr"]
 
-    # u_statistic, p_value = stats.mannwhitneyu(
-    #     times_mem, times_disk, alternative="two-sided"
-    # )
-    # print(f"Mann-Whitney U test statistic: {u_statistic}, p-value: {p_value}")
+    for tool in TOOLS_TO_TEST:
+        designs = test_designs[tool]
+        if len(designs) == 0:
+            raise ValueError(f"No test designs found for tool {tool}")
 
-    # _, p_value_normality_mem = stats.shapiro(times_mem)
-    # _, p_value_normality_disk = stats.shapiro(times_disk)
-    # print(f"Shapiro-Wilk test p-value for in-memory: {p_value_normality_mem}")
-    # print(f"Shapiro-Wilk test p-value for on-disk: {p_value_normality_disk}")
+        for design in designs:
+            match tool:
+                case "vitis_hls":
+                    tcl_fp = Path("run.tcl")
+                    tool_fn: TToolRun = lambda cwd, env=None: run_vitis_hls(  # noqa: E731
+                        tcl_fp=tcl_fp,
+                        vitis_hls_bin=BIN_VITIS_HLS,
+                        cwd=cwd,
+                        env=env,
+                    )
+                case "vivado":
+                    tcl_fp = Path("run.tcl")
+                    tool_fn: TToolRun = lambda cwd, env=None: run_vivado(  # noqa: E731
+                        tcl_fp=tcl_fp,
+                        vivado_bin=BIN_VIVADO,
+                        cwd=cwd,
+                        env=env,
+                    )
+                case "vtr":
+                    vtr_run_fp = Path("run.txt")
+                    tool_fn: TToolRun = lambda cwd, env=None: run_vtr(  # noqa: E731
+                        vtr_bin=BIN_VTR,
+                        vtr_run_fp=vtr_run_fp,
+                        cwd=cwd,
+                        env=env,
+                    )
+                case "yosys":
+                    yosys_script_fp = design.design_dir / "run.ys"
+                    tool_fn: TToolRun = lambda cwd, env=None: run_yosys(  # noqa: E731
+                        yosys_script_fp=yosys_script_fp,
+                        yosys_bin=DIR_CURRENT / "yosys",
+                        cwd=cwd,
+                        env=env,
+                    )
+                case _:
+                    raise ValueError(f"Unknown tool {tool}")
 
-    # t_statistic, p_value_t = stats.ttest_ind(times_mem, times_disk, equal_var=False)
-    # print(f"T-test statistic: {t_statistic}, p-value: {p_value_t}")
+            run_modes = [
+                ("disk", lambda: run_on_disk(tool_fn, design, WORK_DIR), ["disk"]),
+                ("shm", lambda: run_in_memory(tool_fn, design), ["shm"]),
+                (
+                    "shm+mimalloc",
+                    lambda: run_in_memory_and_use_mimalloc(
+                        tool_fn, design, MIMALLOC_SO_FP
+                    ),
+                    ["shm", "mimalloc"],
+                ),
+            ]
+            for mode_name, runner, mode_tags in run_modes:
+                print(f"Running: {tool} / {design.design_dir.name} / {mode_name}")
+                times = Parallel(n_jobs=N_PARALLEL)(
+                    delayed(runner)() for _ in range(N_SAMPLES)
+                )
+                stats = compute_stats(times)
+                exp_name = f"{tool}__{design.design_dir.name}__{mode_name}"
+                exp_data = ExpData(
+                    name=exp_name,
+                    times=times,
+                    stats=stats,
+                    tags=[tool, design.design_dir.name] + mode_tags,
+                )
+                result_fp = RESULTS_DIR / f"{exp_name}.json"
+                exp_data.to_json_file(result_fp)
+                print(f"Saved results to {result_fp}")

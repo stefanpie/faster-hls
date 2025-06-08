@@ -1,0 +1,1 @@
+$VPR_BIN --pack --place --route --analysis --write_rr_graph rr_graph.xml -j1 ./EArch.xml ./sqrt8.blif
