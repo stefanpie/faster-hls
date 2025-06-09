@@ -35,6 +35,19 @@ def auto_find_bin(bin_name: str) -> Path:
     return bin_path
 
 
+def check_return_code(
+    p: subprocess.CompletedProcess, user_message: str | None = None
+) -> None:
+    if p.returncode != 0:
+        raise RuntimeError(
+            f"Process failed with return code {p.returncode}\n"
+            f"COMMAND: {p.args}\n"
+            f"STDOUT:\n{p.stdout.decode('utf-8') if p.stdout else 'None'}\n"
+            f"STDERR:\n{p.stderr.decode('utf-8') if p.stderr else 'None'}\n"
+            f"USERMSG:\n{user_message if user_message else ''}"
+        )
+
+
 @dataclass
 class TestDesign:
     design_dir: Path
@@ -54,6 +67,7 @@ class TestDesign:
 def run_vitis_hls(
     tcl_fp: Path, vitis_hls_bin: Path, cwd: Path, env: dict[str, str] | None = None
 ) -> float:
+    tcl_fp = cwd / tcl_fp
     if not tcl_fp.exists():
         raise FileNotFoundError(f"TCL file {tcl_fp} does not exist.")
 
@@ -77,8 +91,7 @@ def run_vitis_hls(
     )
     t1 = time.time()
 
-    if p.returncode != 0:
-        raise RuntimeError(f"Vitis HLS failed with return code {p.returncode}")
+    check_return_code(p)
 
     dt = t1 - t0
     return dt
@@ -87,6 +100,7 @@ def run_vitis_hls(
 def run_vivado(
     tcl_fp: Path, vivado_bin: Path, cwd: Path, env: dict[str, str] | None = None
 ) -> float:
+    tcl_fp = cwd / tcl_fp
     if not tcl_fp.exists():
         raise FileNotFoundError(f"TCL file {tcl_fp} does not exist.")
 
@@ -113,8 +127,7 @@ def run_vivado(
     )
     t1 = time.time()
 
-    if p.returncode != 0:
-        raise RuntimeError(f"Vivado failed with return code {p.returncode}")
+    check_return_code(p)
 
     dt = t1 - t0
     return dt
@@ -123,12 +136,13 @@ def run_vivado(
 def run_vtr(
     vtr_bin: Path, vtr_run_fp: Path, cwd: Path, env: dict[str, str] | None = None
 ) -> float:
+    vtr_run_fp = cwd / vtr_run_fp
     if not vtr_run_fp.exists():
         raise FileNotFoundError(f"VTR run file {vtr_run_fp} does not exist.")
 
     vtr_run = vtr_run_fp.read_text().strip()
     args = shlex.split(vtr_run)
-    assert args[0] == "$VTR_BIN", "First argument must be $VTR_BIN"
+    assert args[0] == "$VPR_BIN", "First argument must be $VPR_BIN"
     args[0] = str(vtr_bin)
 
     env_for_process = os.environ.copy()
@@ -146,8 +160,7 @@ def run_vtr(
     )
     t1 = time.time()
 
-    if p.returncode != 0:
-        raise RuntimeError(f"VTR failed with return code {p.returncode}")
+    check_return_code(p, user_message=f"cwd: {cwd.resolve()}")
 
     dt = t1 - t0
     return dt
@@ -159,6 +172,7 @@ def run_yosys(
     cwd: Path,
     env: dict[str, str] | None = None,
 ) -> float:
+    yosys_script_fp = cwd / yosys_script_fp
     if not yosys_script_fp.exists():
         raise FileNotFoundError(f"Yosys script {yosys_script_fp} does not exist.")
 
@@ -185,8 +199,7 @@ def run_yosys(
     )
     t1 = time.time()
 
-    if p.returncode != 0:
-        raise RuntimeError(f"Yosys failed with return code {p.returncode}")
+    check_return_code(p)
 
     dt = t1 - t0
     return dt
@@ -317,14 +330,40 @@ class ExpData:
     def to_json_file(self, fp: Path) -> None:
         fp.write_text(self.to_json_str())
 
+    @classmethod
+    def from_json_str(cls, json_str: str) -> Self:
+        data = json.loads(json_str)
+        stats = Stats(
+            mean=data["mean"],
+            std=data["std"],
+            var=data["var"],
+            median=data["median"],
+            p25=data["p25"],
+            p75=data["p75"],
+            p05=data["p05"],
+            p95=data["p95"],
+            min_time=data["min_time"],
+            max_time=data["max_time"],
+        )
+        return cls(
+            name=data["name"],
+            times=data["times"],
+            stats=stats,
+            tags=data.get("tags", []),
+        )
+
+    @classmethod
+    def from_json_file(cls, fp: Path) -> Self:
+        if not fp.exists():
+            raise FileNotFoundError(f"File {fp} does not exist.")
+        json_str = fp.read_text()
+        return cls.from_json_str(json_str)
+
 
 if __name__ == "__main__":
     MIMALLOC_SO_FP = Path("/usr/scratch/common/minialloc/libmimalloc.so")
 
     DIR_CURRENT = Path(__file__).parent
-
-    # TEST_DESIGN_DIR = DIR_CURRENT / "test_design__simple"
-    # test_design = TestDesign(design_dir=TEST_DESIGN_DIR)
 
     TEST_DESIGNS_DIR = DIR_CURRENT / "test_designs"
 
@@ -363,14 +402,25 @@ if __name__ == "__main__":
     if not RESULTS_DIR.exists():
         RESULTS_DIR.mkdir(parents=True)
 
-    TOOLS_TO_TEST = ["vtr"]
+    TOOLS_TO_TEST = ["vitis_hls"]
+    DESIGNS_TO_FILTER = [
+        "vitis_hls__simple",
+    ]
 
     for tool in TOOLS_TO_TEST:
         designs = test_designs[tool]
         if len(designs) == 0:
             raise ValueError(f"No test designs found for tool {tool}")
 
-        for design in designs:
+        designs_to_test = designs
+        if DESIGNS_TO_FILTER is not None and len(DESIGNS_TO_FILTER) > 0:
+            designs_to_test = [
+                design
+                for design in designs
+                if design.design_dir.name in DESIGNS_TO_FILTER
+            ]
+
+        for design in designs_to_test:
             match tool:
                 case "vitis_hls":
                     tcl_fp = Path("run.tcl")
