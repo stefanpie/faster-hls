@@ -1,6 +1,4 @@
 from pathlib import Path
-from pprint import pp
-from turtle import pd
 
 import pandas as pd
 import seaborn as sns
@@ -100,7 +98,9 @@ def plot_results_single_design(
     return fig, ax
 
 
-designs_to_plot = ["vtr__mcnc_simple", "vtr__mcnc_big", "vtr__mcnc_big_search"]
+designs_to_plot = ["vtr__mcnc_simple", "vtr__mcnc_big", "vtr__mcnc_big_search"] + [
+    "vitis_hls__simple"
+]
 
 
 for design_name in designs_to_plot:

@@ -391,8 +391,8 @@ if __name__ == "__main__":
     BIN_VIVADO = auto_find_bin("vivado")
     BIN_YOSYS = auto_find_bin("yosys")
 
-    N_SAMPLES = 32
-    N_PARALLEL = 32
+    N_SAMPLES = 48
+    N_PARALLEL = 48
 
     WORK_DIR = DIR_CURRENT / "work_dir"
     if not WORK_DIR.exists():
