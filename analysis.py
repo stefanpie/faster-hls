@@ -79,7 +79,7 @@ def plot_results_single_design(
 
     df_plot = pd.DataFrame(data, columns=["time", "label"])
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(6, 4))
 
     sns.kdeplot(
         data=df_plot,
@@ -89,18 +89,27 @@ def plot_results_single_design(
         palette=["blue", "orange", "green"],
         ax=ax,
         alpha=0.2,
+        legend=False,
     )
 
-    ax.set_title(f"Execution Times for {design_name}")
-    ax.set_xlabel("Execution Time (seconds)")
+    ax.legend(
+        ["on-disk (base)", "in-memory", "in-memory + mimalloc"],
+        loc="upper left",
+        title="Runtime Acceleration Method",
+    )
+
+    ax.set_title(f'Execution Runtimes for "{design_name}" Case')
+    ax.set_xlabel("Runtime (seconds)")
     ax.set_ylabel("Frequency")
 
     return fig, ax
 
 
-designs_to_plot = ["vtr__mcnc_simple", "vtr__mcnc_big", "vtr__mcnc_big_search"] + [
-    "vitis_hls__simple"
-]
+designs_to_plot = (
+    ["vtr__mcnc_simple", "vtr__mcnc_big", "vtr__mcnc_big_search"]
+    + ["vitis_hls__simple"]
+    + ["vitis_hls__nesting"]
+)
 
 
 for design_name in designs_to_plot:

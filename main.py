@@ -404,7 +404,7 @@ if __name__ == "__main__":
 
     TOOLS_TO_TEST = ["vitis_hls"]
     DESIGNS_TO_FILTER = [
-        "vitis_hls__simple",
+        "vitis_hls__nesting",
     ]
 
     for tool in TOOLS_TO_TEST:
