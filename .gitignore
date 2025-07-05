@@ -12,3 +12,4 @@ wheels/
 work_dir/
 hls_proj/
 vivado__simple/
+temp_dir/

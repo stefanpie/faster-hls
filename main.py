@@ -14,7 +14,6 @@ from tempfile import TemporaryDirectory
 from typing import Any, Callable, Optional, Protocol, Self, Union
 
 from joblib import Parallel, delayed
-from scipy import stats
 
 
 # unwrap function for Optional types
@@ -134,7 +133,10 @@ def run_vivado(
 
 
 def run_vtr(
-    vtr_bin: Path, vtr_run_fp: Path, cwd: Path, env: dict[str, str] | None = None
+    vtr_bin: Path | None,
+    vtr_run_fp: Path,
+    cwd: Path,
+    env: dict[str, str] | None = None,
 ) -> float:
     vtr_run_fp = cwd / vtr_run_fp
     if not vtr_run_fp.exists():
@@ -259,6 +261,129 @@ def run_in_memory_and_use_mimalloc(
     return dt
 
 
+def run_use_mimalloc(
+    tool_fn: TToolRun,
+    test_design: TestDesign,
+    work_dir: Path,
+    mimalloc_so_fp: Path,
+) -> float:
+    if not work_dir.exists():
+        raise FileNotFoundError(f"Work directory {work_dir} does not exist.")
+    iso_timestamp: str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    with TemporaryDirectory(
+        dir=work_dir, delete=True, prefix=f"{iso_timestamp}__"
+    ) as tmpdir:
+        temp_fp = Path(tmpdir)
+        test_design_in_temp = test_design.copy_to_dir(temp_fp)
+        dt = tool_fn(
+            cwd=test_design_in_temp.design_dir,
+            env={
+                "LD_PRELOAD": str(mimalloc_so_fp),
+                "MIMALLOC_ARENA_EAGER_COMMIT": "2",
+                "MIMALLOC_PURGE_DELAY": "200",
+            },
+        )
+    return dt
+
+
+def create_vtr_tool_fn(
+    vtr_bin: Path, vtr_run_fp: Path, use_mimalloc_binary: bool = False
+) -> TToolRun:
+    def tool_fn(cwd: Path, env: Optional[dict[str, str]] = None) -> float:
+        return run_vtr(
+            vtr_bin=vtr_bin,
+            vtr_run_fp=vtr_run_fp,
+            cwd=cwd,
+            env=env,
+        )
+
+    return tool_fn
+
+
+def create_tool_runner(
+    tool: str, design: TestDesign, mimalloc_enabled: bool = False
+) -> TToolRun:
+    match tool:
+        case "vitis_hls":
+            tcl_fp = Path("run.tcl")
+            return lambda cwd, env=None: run_vitis_hls(
+                tcl_fp=tcl_fp,
+                vitis_hls_bin=BIN_VITIS_HLS,
+                cwd=cwd,
+                env=env,
+            )
+        case "vivado":
+            tcl_fp = Path("run.tcl")
+            return lambda cwd, env=None: run_vivado(
+                tcl_fp=tcl_fp,
+                vivado_bin=BIN_VIVADO,
+                cwd=cwd,
+                env=env,
+            )
+        case "vtr":
+            vtr_run_fp = Path("run.txt")
+            vtr_bin = BIN_VTR_MIMALLOC if mimalloc_enabled else BIN_VTR
+            return create_vtr_tool_fn(vtr_bin, vtr_run_fp)
+        case "yosys":
+            yosys_script_fp = design.design_dir / "run.ys"
+            return lambda cwd, env=None: run_yosys(
+                yosys_script_fp=yosys_script_fp,
+                yosys_bin=DIR_CURRENT / "yosys",
+                cwd=cwd,
+                env=env,
+            )
+        case _:
+            raise ValueError(f"Unknown tool {tool}")
+
+
+def create_run_modes(
+    tool: str, design: TestDesign, work_dir: Path, mimalloc_so_fp: Path
+) -> list[tuple[str, Callable[[], float], list[str]]]:
+    if tool == "vtr":
+        return [
+            (
+                "disk",
+                lambda: run_on_disk(
+                    create_tool_runner(tool, design, False), design, work_dir
+                ),
+                ["disk"],
+            ),
+            (
+                "shm",
+                lambda: run_in_memory(create_tool_runner(tool, design, False), design),
+                ["shm"],
+            ),
+            (
+                "shm+mimalloc",
+                lambda: run_in_memory(create_tool_runner(tool, design, True), design),
+                ["shm", "mimalloc"],
+            ),
+            (
+                "disk+mimalloc",
+                lambda: run_on_disk(
+                    create_tool_runner(tool, design, True), design, work_dir
+                ),
+                ["disk", "mimalloc"],
+            ),
+        ]
+    else:
+        tool_fn = create_tool_runner(tool, design, False)
+        return [
+            ("disk", lambda: run_on_disk(tool_fn, design, work_dir), ["disk"]),
+            ("shm", lambda: run_in_memory(tool_fn, design), ["shm"]),
+            (
+                "shm+mimalloc",
+                lambda: run_in_memory_and_use_mimalloc(tool_fn, design, mimalloc_so_fp),
+                ["shm", "mimalloc"],
+            ),
+            (
+                "disk+mimalloc",
+                lambda: run_use_mimalloc(tool_fn, design, work_dir, mimalloc_so_fp),
+                ["disk", "mimalloc"],
+            ),
+        ]
+
+
 @dataclass
 class Stats:
     mean: float
@@ -361,7 +486,7 @@ class ExpData:
 
 
 if __name__ == "__main__":
-    MIMALLOC_SO_FP = Path("/usr/scratch/common/minialloc/libmimalloc.so")
+    MIMALLOC_SO_FP = Path("/usr/scratch/common/mimalloc/libmimalloc.so")
 
     DIR_CURRENT = Path(__file__).parent
 
@@ -387,6 +512,7 @@ if __name__ == "__main__":
     pp(test_designs)
 
     BIN_VTR = DIR_CURRENT / "tools" / "vpr"
+    BIN_VTR_MIMALLOC = DIR_CURRENT / "tools" / "vpr-mimalloc"
     BIN_VITIS_HLS = auto_find_bin("vitis_hls")
     BIN_VIVADO = auto_find_bin("vivado")
     BIN_YOSYS = auto_find_bin("yosys")
@@ -402,9 +528,27 @@ if __name__ == "__main__":
     if not RESULTS_DIR.exists():
         RESULTS_DIR.mkdir(parents=True)
 
-    TOOLS_TO_TEST = ["vitis_hls"]
+    # TOOLS_TO_TEST = ["vitis_hls"]
+    # DESIGNS_TO_FILTER = [
+    #     "vitis_hls__nesting",
+    # ]
+
+    TOOLS_TO_TEST = [
+        "vtr",
+        # "vitis_hls",
+    ]
     DESIGNS_TO_FILTER = [
-        "vitis_hls__nesting",
+        "vtr__mcnc_big",
+        "vtr__mcnc_big_search",
+        "vtr__mcnc_simple",
+        # "vitis_hls__nesting",
+        # "vitis_hls__simple",
+    ]
+    RUN_MODES_TO_TEST = [
+        "disk",
+        "shm",
+        "shm+mimalloc",
+        "disk+mimalloc",
     ]
 
     for tool in TOOLS_TO_TEST:
@@ -421,64 +565,20 @@ if __name__ == "__main__":
             ]
 
         for design in designs_to_test:
-            match tool:
-                case "vitis_hls":
-                    tcl_fp = Path("run.tcl")
-                    tool_fn: TToolRun = lambda cwd, env=None: run_vitis_hls(  # noqa: E731
-                        tcl_fp=tcl_fp,
-                        vitis_hls_bin=BIN_VITIS_HLS,
-                        cwd=cwd,
-                        env=env,
-                    )
-                case "vivado":
-                    tcl_fp = Path("run.tcl")
-                    tool_fn: TToolRun = lambda cwd, env=None: run_vivado(  # noqa: E731
-                        tcl_fp=tcl_fp,
-                        vivado_bin=BIN_VIVADO,
-                        cwd=cwd,
-                        env=env,
-                    )
-                case "vtr":
-                    vtr_run_fp = Path("run.txt")
-                    tool_fn: TToolRun = lambda cwd, env=None: run_vtr(  # noqa: E731
-                        vtr_bin=BIN_VTR,
-                        vtr_run_fp=vtr_run_fp,
-                        cwd=cwd,
-                        env=env,
-                    )
-                case "yosys":
-                    yosys_script_fp = design.design_dir / "run.ys"
-                    tool_fn: TToolRun = lambda cwd, env=None: run_yosys(  # noqa: E731
-                        yosys_script_fp=yosys_script_fp,
-                        yosys_bin=DIR_CURRENT / "yosys",
-                        cwd=cwd,
-                        env=env,
-                    )
-                case _:
-                    raise ValueError(f"Unknown tool {tool}")
-
-            run_modes = [
-                ("disk", lambda: run_on_disk(tool_fn, design, WORK_DIR), ["disk"]),
-                ("shm", lambda: run_in_memory(tool_fn, design), ["shm"]),
-                (
-                    "shm+mimalloc",
-                    lambda: run_in_memory_and_use_mimalloc(
-                        tool_fn, design, MIMALLOC_SO_FP
-                    ),
-                    ["shm", "mimalloc"],
-                ),
-            ]
+            run_modes = create_run_modes(tool, design, WORK_DIR, MIMALLOC_SO_FP)
             for mode_name, runner, mode_tags in run_modes:
+                if mode_name not in RUN_MODES_TO_TEST:
+                    continue
                 print(f"Running: {tool} / {design.design_dir.name} / {mode_name}")
                 times = Parallel(n_jobs=N_PARALLEL)(
                     delayed(runner)() for _ in range(N_SAMPLES)
                 )
-                stats = compute_stats(times)
+                run_stats = compute_stats(times)
                 exp_name = f"{tool}__{design.design_dir.name}__{mode_name}"
                 exp_data = ExpData(
                     name=exp_name,
                     times=times,
-                    stats=stats,
+                    stats=run_stats,
                     tags=[tool, design.design_dir.name] + mode_tags,
                 )
                 result_fp = RESULTS_DIR / f"{exp_name}.json"
