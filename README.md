@@ -1,6 +1,6 @@
 # Faster HLS
 
-This repository tracks my experiments on reducing Vitis HLS runtime.
+This repository tracks my experiments on reducing Vitis HLS runtime. I am also applying the same idea to other EDA tools like VTR, Yosys, Vivado, and Quartus.
 
 So far, the two most effective techniques are:
 
