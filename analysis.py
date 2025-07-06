@@ -31,11 +31,14 @@ for r in exp_results:
     print(f"  - tags: {', '.join(r.tags)}")
 
 
+TOOLS = ["vtr", "vitis_hls"]
+
 MAP_COLORS = {
     "disk": "red",
     "shm": "orange",
     "shm+mimalloc": "green",
     "disk+mimalloc": "blue",
+    "disk+mimalloc+lcall": "purple",
 }
 
 MAP_LABELS = {
@@ -43,6 +46,15 @@ MAP_LABELS = {
     "shm": "in-memory",
     "shm+mimalloc": "in-memory + mimalloc",
     "disk+mimalloc": "on-disk + mimalloc",
+    "disk+mimalloc+lcall": "on-disk + mimalloc + LC_ALL=C",
+}
+
+MAP_ZORDER = {
+    "disk": 1,
+    "shm": 2,
+    "shm+mimalloc": 3,
+    "disk+mimalloc": 4,
+    "disk+mimalloc+lcall": 5,
 }
 
 
@@ -53,38 +65,43 @@ def gather_data(
     # filter results with the deisgn name in the tag
 
     filtered_results = [r for r in exp_results if design_name in r.tags]
-    assert len(filtered_results) == 4
+
+    tag_sets = [set(r.tags) for r in filtered_results]
+    for ts in tag_sets:
+        ts.remove(design_name)
+        for tool in TOOLS:
+            if tool in ts:
+                ts.remove(tool)
 
     disk_result = next(
-        (
-            r
-            for r in filtered_results
-            if "disk" in r.tags and "shm" not in r.tags and "mimalloc" not in r.tags
-        ),
+        (r for r, tag_set in zip(filtered_results, tag_sets) if tag_set == {"disk"}),
         None,
     )
     shm_result = next(
-        (
-            r
-            for r in filtered_results
-            if "disk" not in r.tags and "shm" in r.tags and "mimalloc" not in r.tags
-        ),
+        (r for r, tag_set in zip(filtered_results, tag_sets) if tag_set == {"shm"}),
         None,
     )
     shm_mimalloc_result = next(
         (
             r
-            for r in filtered_results
-            if "disk" not in r.tags and "shm" in r.tags and "mimalloc" in r.tags
+            for r, tag_set in zip(filtered_results, tag_sets)
+            if tag_set == {"shm", "mimalloc"}
         ),
         None,
     )
-
     disk_mimalloc_result = next(
         (
             r
-            for r in filtered_results
-            if "disk" in r.tags and "shm" not in r.tags and "mimalloc" in r.tags
+            for r, tag_set in zip(filtered_results, tag_sets)
+            if tag_set == {"disk", "mimalloc"}
+        ),
+        None,
+    )
+    disk_mimalloc_lcall_result = next(
+        (
+            r
+            for r, tag_set in zip(filtered_results, tag_sets)
+            if tag_set == {"disk", "mimalloc", "lcall"}
         ),
         None,
     )
@@ -93,11 +110,19 @@ def gather_data(
     shm_result = unwrap(shm_result)
     shm_mimalloc_result = unwrap(shm_mimalloc_result)
     disk_mimalloc_result = unwrap(disk_mimalloc_result)
+    disk_mimalloc_lcall_result = unwrap(disk_mimalloc_lcall_result)
 
+    # gather all results into a single dataframe
     data = []
     for r, label in zip(
-        [disk_result, shm_result, shm_mimalloc_result, disk_mimalloc_result],
-        ["disk", "shm", "shm+mimalloc", "disk+mimalloc"],
+        [
+            disk_result,
+            shm_result,
+            shm_mimalloc_result,
+            disk_mimalloc_result,
+            disk_mimalloc_lcall_result,
+        ],
+        ["disk", "shm", "shm+mimalloc", "disk+mimalloc", "disk+mimalloc+lcall"],
     ):
         for t in r.times:
             data.append((t, label))
@@ -114,14 +139,12 @@ def plot_results_single_design(
 
     fig, ax = plt.subplots(figsize=(6, 4))
 
-    palette, hue_order = MAP_COLORS, ["disk", "shm", "shm+mimalloc", "disk+mimalloc"]
+    palette, hue_order = (
+        MAP_COLORS,
+        ["disk", "shm", "shm+mimalloc", "disk+mimalloc", "disk+mimalloc+lcall"],
+    )
 
-    zorder_map = {
-        "disk": 1,
-        "shm": 2,
-        "shm+mimalloc": 3,
-        "disk+mimalloc": 4,
-    }
+    zorder_map = MAP_ZORDER
 
     for label in hue_order:
         sns.kdeplot(
@@ -137,22 +160,8 @@ def plot_results_single_design(
         )
 
     leg_handles = [
-        plt.Rectangle((0, 0), 1, 1, color=MAP_COLORS["disk"], label=MAP_LABELS["disk"]),
-        plt.Rectangle((0, 0), 1, 1, color=MAP_COLORS["shm"], label=MAP_LABELS["shm"]),
-        plt.Rectangle(
-            (0, 0),
-            1,
-            1,
-            color=MAP_COLORS["shm+mimalloc"],
-            label=MAP_LABELS["shm+mimalloc"],
-        ),
-        plt.Rectangle(
-            (0, 0),
-            1,
-            1,
-            color=MAP_COLORS["disk+mimalloc"],
-            label=MAP_LABELS["disk+mimalloc"],
-        ),
+        plt.Rectangle((0, 0), 1, 1, color=MAP_COLORS[case], label=MAP_LABELS[case])
+        for case in hue_order
     ]
 
     ax.legend(
@@ -207,7 +216,13 @@ def build_report_single_design(
     # clean up this table and make it pretty as a markdown table
     stats_norm = stats_norm.drop(columns=["label"])
     stats_norm = stats_norm.round(2)
-    stats_norm.index = ["disk", "shm", "shm+mimalloc", "disk+mimalloc"]
+    stats_norm.index = [
+        "disk",
+        "shm",
+        "shm+mimalloc",
+        "disk+mimalloc",
+        "disk+mimalloc+lcall",
+    ]
 
     # add an index label
     stats_norm.index.name = "Method"
@@ -247,6 +262,9 @@ def build_stats_tests_single_design(
     shm_times = df_plot[df_plot["label"] == "shm"]["time"]
     shm_mimalloc_times = df_plot[df_plot["label"] == "shm+mimalloc"]["time"]
     disk_mimalloc_times = df_plot[df_plot["label"] == "disk+mimalloc"]["time"]
+    disk_mimalloc_lcall_times = df_plot[df_plot["label"] == "disk+mimalloc+lcall"][
+        "time"
+    ]
 
     stat_shm, p_shm = mannwhitneyu(shm_times, disk_times, alternative="less")
     stat_shm_mimalloc, p_shm_mimalloc = mannwhitneyu(
@@ -255,11 +273,15 @@ def build_stats_tests_single_design(
     stat_disk_mimalloc, p_disk_mimalloc = mannwhitneyu(
         disk_mimalloc_times, disk_times, alternative="less"
     )
+    stat_disk_mimalloc_lcall, p_disk_mimalloc_lcall = mannwhitneyu(
+        disk_mimalloc_lcall_times, disk_times, alternative="less"
+    )
 
     report += "## Mann-Whitney U Test Results\n"
     report += f"- SHM < Disk: U-statistic = {stat_shm:.2f}, p-value = {p_shm:.4f}\n"
     report += f"- SHM + Mimalloc < Disk: U-statistic = {stat_shm_mimalloc:.2f}, p-value = {p_shm_mimalloc:.4f}\n"
     report += f"- Disk + Mimalloc < Disk: U-statistic = {stat_disk_mimalloc:.2f}, p-value = {p_disk_mimalloc:.4f}\n"
+    report += f"- Disk + Mimalloc + LC_ALL=C < Disk: U-statistic = {stat_disk_mimalloc_lcall:.2f}, p-value = {p_disk_mimalloc_lcall:.4f}\n"
 
     return report
 
@@ -276,7 +298,7 @@ for design_name in designs_to_plot:
     fig.savefig(DIR_FIGURES / f"{design_name}_execution_times.png", dpi=300)
     plt.close(fig)
 
-    # build_report_single_design(exp_results, design_name)
+    build_report_single_design(exp_results, design_name)
 
     stats = build_stats_tests_single_design(exp_results, design_name)
     print(stats)

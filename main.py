@@ -286,6 +286,32 @@ def run_use_mimalloc(
     return dt
 
 
+def run_use_mimalloc_and_lcall(
+    tool_fn: TToolRun,
+    test_design: TestDesign,
+    work_dir: Path,
+    mimalloc_so_fp: Path,
+) -> float:
+    if not work_dir.exists():
+        raise FileNotFoundError(f"Work directory {work_dir} does not exist.")
+    iso_timestamp: str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    with TemporaryDirectory(
+        dir=work_dir, delete=True, prefix=f"{iso_timestamp}__"
+    ) as tmpdir:
+        temp_fp = Path(tmpdir)
+        test_design_in_temp = test_design.copy_to_dir(temp_fp)
+        dt = tool_fn(
+            cwd=test_design_in_temp.design_dir,
+            env={
+                "LD_PRELOAD": str(mimalloc_so_fp),
+                "MIMALLOC_ARENA_EAGER_COMMIT": "2",
+                "MIMALLOC_PURGE_DELAY": "200",
+                "LC_ALL": "C",
+            },
+        )
+    return dt
+
+
 def create_vtr_tool_fn(
     vtr_bin: Path, vtr_run_fp: Path, use_mimalloc_binary: bool = False
 ) -> TToolRun:
@@ -365,6 +391,16 @@ def create_run_modes(
                 ),
                 ["disk", "mimalloc"],
             ),
+            (
+                "disk+mimalloc+lcall",
+                lambda: run_use_mimalloc_and_lcall(
+                    create_tool_runner(tool, design, True),
+                    design,
+                    work_dir,
+                    mimalloc_so_fp,
+                ),
+                ["disk", "mimalloc", "lcall"],
+            ),
         ]
     else:
         tool_fn = create_tool_runner(tool, design, False)
@@ -380,6 +416,13 @@ def create_run_modes(
                 "disk+mimalloc",
                 lambda: run_use_mimalloc(tool_fn, design, work_dir, mimalloc_so_fp),
                 ["disk", "mimalloc"],
+            ),
+            (
+                "disk+mimalloc+lcall",
+                lambda: run_use_mimalloc_and_lcall(
+                    tool_fn, design, work_dir, mimalloc_so_fp
+                ),
+                ["disk", "mimalloc", "lcall"],
             ),
         ]
 
@@ -545,10 +588,11 @@ if __name__ == "__main__":
         # "vitis_hls__simple",
     ]
     RUN_MODES_TO_TEST = [
-        "disk",
-        "shm",
-        "shm+mimalloc",
-        "disk+mimalloc",
+        # "disk",
+        # "shm",
+        # "shm+mimalloc",
+        # "disk+mimalloc",
+        "disk+mimalloc+lcall",
     ]
 
     for tool in TOOLS_TO_TEST:
