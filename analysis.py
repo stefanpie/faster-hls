@@ -214,10 +214,11 @@ def build_report_single_design(
 
     stats_norm.columns = ["Mean", "Median", "5% Quantile", "95% Quantile"]
 
-    print(f"## Results for {design_name}")
+    print(f"**Results for {design_name}**")
     print(stats_norm.to_markdown())
+    print()
 
-    return f"## Results for {design_name}\n\n{stats_norm.to_markdown()}\n"
+    return f"**Results for {design_name}**\n\n{stats_norm.to_markdown()}\n"
 
 
 def build_stats_tests_single_design(
@@ -275,7 +276,7 @@ for design_name in designs_to_plot:
     fig.savefig(DIR_FIGURES / f"{design_name}_execution_times.png", dpi=300)
     plt.close(fig)
 
-    build_report_single_design(exp_results, design_name)
+    # build_report_single_design(exp_results, design_name)
 
     stats = build_stats_tests_single_design(exp_results, design_name)
     print(stats)
