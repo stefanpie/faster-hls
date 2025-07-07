@@ -1,0 +1,5 @@
+`yosys-abc` in this `yosys-mimalloc/` directory is actually `yosys-abc-mimalloc`, built with mimalloc.
+Yosys just hardcodes the name and path to `yosys-abc` binary to be next to the `yosys` binary, so we have to do this rename.
+
+There is a way to allow external ABC binary by setting the `ABC` environment variable, but this only works when yosys is built with the ABCEXTERNAL option.
+I can explore this in the future, but for now this is the simplest solution.

@@ -13,6 +13,7 @@ from pprint import pp
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Optional, Protocol, Self, Union
 
+import tqdm
 from joblib import Parallel, delayed
 
 
@@ -20,7 +21,8 @@ from joblib import Parallel, delayed
 def unwrap[T](value: Optional[T]) -> T:
     if value is None:
         raise ValueError("Value is None")
-    return value
+    else:
+        return value
 
 
 def auto_find_bin(bin_name: str) -> Path:
@@ -51,7 +53,7 @@ def check_return_code(
 class TestDesign:
     design_dir: Path
 
-    def copy_to_dir(self, target_dir: Path) -> Self:
+    def copy_to_dir(self, target_dir: Path) -> "TestDesign":
         if not target_dir.exists():
             raise FileNotFoundError(f"Target directory {target_dir} does not exist.")
         design_dir_in_target = target_dir / self.design_dir.name
@@ -171,6 +173,8 @@ def run_vtr(
 def run_yosys(
     yosys_script_fp: Path,
     yosys_bin: Path,
+    yosys_share: Path,
+    yosys_abc_bin: Path,
     cwd: Path,
     env: dict[str, str] | None = None,
 ) -> float:
@@ -190,6 +194,9 @@ def run_yosys(
     if env is not None and len(env) > 0:
         for k, v in env.items():
             env_for_process[k] = v
+
+    env_for_process["YOSYS_DATDIR"] = str(yosys_share.resolve())
+    env_for_process["ABC"] = str(yosys_abc_bin.resolve())
 
     t0 = time.time()
     p = subprocess.run(
@@ -254,8 +261,7 @@ def run_in_memory_and_use_mimalloc(
             cwd=test_design_in_temp.design_dir,
             env={
                 "LD_PRELOAD": str(mimalloc_so_fp),
-                "MIMALLOC_ARENA_EAGER_COMMIT": "2",
-                "MIMALLOC_PURGE_DELAY": "200",
+                **MIMALLOC_SETTINGS,
             },
         )
     return dt
@@ -279,8 +285,7 @@ def run_use_mimalloc(
             cwd=test_design_in_temp.design_dir,
             env={
                 "LD_PRELOAD": str(mimalloc_so_fp),
-                "MIMALLOC_ARENA_EAGER_COMMIT": "2",
-                "MIMALLOC_PURGE_DELAY": "200",
+                **MIMALLOC_SETTINGS,
             },
         )
     return dt
@@ -304,8 +309,7 @@ def run_use_mimalloc_and_lcall(
             cwd=test_design_in_temp.design_dir,
             env={
                 "LD_PRELOAD": str(mimalloc_so_fp),
-                "MIMALLOC_ARENA_EAGER_COMMIT": "2",
-                "MIMALLOC_PURGE_DELAY": "200",
+                **MIMALLOC_SETTINGS,
                 "LC_ALL": "C",
             },
         )
@@ -352,9 +356,15 @@ def create_tool_runner(
             return create_vtr_tool_fn(vtr_bin, vtr_run_fp)
         case "yosys":
             yosys_script_fp = design.design_dir / "run.ys"
+            yosys_bin = BIN_YOSYS_MIMALLOC if mimalloc_enabled else BIN_YOSYS
+            yosys_abc_bin = (
+                BIN_YOSYS_ABC_MIMALLOC if mimalloc_enabled else BIN_YOSYS_ABC
+            )
             return lambda cwd, env=None: run_yosys(
                 yosys_script_fp=yosys_script_fp,
-                yosys_bin=DIR_CURRENT / "yosys",
+                yosys_bin=yosys_bin,
+                yosys_share=SHARE_YOSYS,
+                yosys_abc_bin=yosys_abc_bin,
                 cwd=cwd,
                 env=env,
             )
@@ -365,7 +375,7 @@ def create_tool_runner(
 def create_run_modes(
     tool: str, design: TestDesign, work_dir: Path, mimalloc_so_fp: Path
 ) -> list[tuple[str, Callable[[], float], list[str]]]:
-    if tool == "vtr":
+    if tool == "vtr" or tool == "yosys":
         return [
             (
                 "disk",
@@ -475,7 +485,7 @@ class ExpData:
     stats: Stats
     tags: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, float]:
+    def to_dict(self) -> dict[str, str | int | float]:
         return {
             "name": self.name,
             "tags": self.tags,
@@ -556,12 +566,20 @@ if __name__ == "__main__":
 
     BIN_VTR = DIR_CURRENT / "tools" / "vpr"
     BIN_VTR_MIMALLOC = DIR_CURRENT / "tools" / "vpr-mimalloc"
+
     BIN_VITIS_HLS = auto_find_bin("vitis_hls")
     BIN_VIVADO = auto_find_bin("vivado")
-    BIN_YOSYS = auto_find_bin("yosys")
 
-    N_SAMPLES = 48
-    N_PARALLEL = 48
+    BIN_YOSYS = DIR_CURRENT / "tools" / "yosys" / "yosys"
+    BIN_YOSYS_ABC = DIR_CURRENT / "tools" / "yosys" / "yosys-abc"
+
+    BIN_YOSYS_MIMALLOC = DIR_CURRENT / "tools" / "yosys-mimalloc" / "yosys-mimalloc"
+    BIN_YOSYS_ABC_MIMALLOC = DIR_CURRENT / "tools" / "yosys-mimalloc" / "yosys-abc"
+
+    SHARE_YOSYS = DIR_CURRENT / "tools" / "yosys-share"
+
+    N_SAMPLES = 128
+    N_PARALLEL = 16
 
     WORK_DIR = DIR_CURRENT / "work_dir"
     if not WORK_DIR.exists():
@@ -577,23 +595,34 @@ if __name__ == "__main__":
     # ]
 
     TOOLS_TO_TEST = [
-        "vtr",
-        # "vitis_hls",
+        # "vtr",
+        "vitis_hls",
+        # "yosys",
+        # "vivado",
     ]
     DESIGNS_TO_FILTER = [
-        "vtr__mcnc_big",
-        "vtr__mcnc_big_search",
-        "vtr__mcnc_simple",
-        # "vitis_hls__nesting",
-        # "vitis_hls__simple",
+        # "vtr__mcnc_big",
+        # "vtr__mcnc_big_search",
+        # "vtr__mcnc_simple",
+        # "yosys__simple",
+        # "yosys__complex",
+        "vitis_hls__nesting",
+        "vitis_hls__simple",
+        # "vivado__simple",
     ]
     RUN_MODES_TO_TEST = [
-        # "disk",
-        # "shm",
-        # "shm+mimalloc",
-        # "disk+mimalloc",
-        "disk+mimalloc+lcall",
+        "disk",
+        "shm",
+        "shm+mimalloc",
+        "disk+mimalloc",
+        # "disk+mimalloc+lcall",
     ]
+
+    MIMALLOC_SETTINGS = {
+        "MIMALLOC_ARENA_EAGER_COMMIT": "1",
+        "MIMALLOC_PURGE_DELAY": "2000",
+        "MIMALLOC_EAGER_COMMIT_DELAY": "4",
+    }
 
     for tool in TOOLS_TO_TEST:
         designs = test_designs[tool]
@@ -615,7 +644,7 @@ if __name__ == "__main__":
                     continue
                 print(f"Running: {tool} / {design.design_dir.name} / {mode_name}")
                 times = Parallel(n_jobs=N_PARALLEL)(
-                    delayed(runner)() for _ in range(N_SAMPLES)
+                    delayed(runner)() for _ in tqdm.tqdm(range(N_SAMPLES))
                 )
                 run_stats = compute_stats(times)
                 exp_name = f"{tool}__{design.design_dir.name}__{mode_name}"

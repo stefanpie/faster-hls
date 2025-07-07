@@ -5,19 +5,11 @@ template <int ID> void level5(int &out, int in) {
   out = (in ^ (123 + ID)) + (in << 2) - (in >> 1) + 77;
 }
 
-template <int ID> void level4(int &out, int in) {
-#pragma HLS inline off
-  int tmp1, tmp2;
-  level5<ID * 2>(tmp1, in);
-  level5<ID * 2 + 1>(tmp2, in + 1);
-  out = tmp1 * 2 + tmp2;
-}
-
 template <int ID> void level3(int &out, int in) {
 #pragma HLS inline off
   int tmp1, tmp2;
-  level4<ID * 2>(tmp1, in);
-  level4<ID * 2 + 1>(tmp2, in + 2);
+  level5<ID * 2>(tmp1, in);
+  level5<ID * 2 + 1>(tmp2, in + 2);
   out = tmp1 + tmp2 + (in % 3);
 }
 

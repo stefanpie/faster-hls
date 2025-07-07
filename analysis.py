@@ -31,7 +31,7 @@ for r in exp_results:
     print(f"  - tags: {', '.join(r.tags)}")
 
 
-TOOLS = ["vtr", "vitis_hls"]
+TOOLS = ["vtr", "vitis_hls", "yosys", "vivado"]
 
 MAP_COLORS = {
     "disk": "red",
@@ -42,11 +42,11 @@ MAP_COLORS = {
 }
 
 MAP_LABELS = {
-    "disk": "on-disk (base)",
-    "shm": "in-memory",
-    "shm+mimalloc": "in-memory + mimalloc",
-    "disk+mimalloc": "on-disk + mimalloc",
-    "disk+mimalloc+lcall": "on-disk + mimalloc + LC_ALL=C",
+    "disk": "FS on-disk (base)",
+    "shm": "FS in-memory",
+    "shm+mimalloc": "FS in-memory + mimalloc",
+    "disk+mimalloc": "FS on-disk + mimalloc",
+    "disk+mimalloc+lcall": "FS on-disk + mimalloc + LC_ALL=C",
 }
 
 MAP_ZORDER = {
@@ -77,10 +77,14 @@ def gather_data(
         (r for r, tag_set in zip(filtered_results, tag_sets) if tag_set == {"disk"}),
         None,
     )
+    assert disk_result is not None
+
     shm_result = next(
         (r for r, tag_set in zip(filtered_results, tag_sets) if tag_set == {"shm"}),
         None,
     )
+    assert shm_result is not None
+
     shm_mimalloc_result = next(
         (
             r
@@ -89,6 +93,8 @@ def gather_data(
         ),
         None,
     )
+    assert shm_mimalloc_result is not None
+
     disk_mimalloc_result = next(
         (
             r
@@ -97,20 +103,29 @@ def gather_data(
         ),
         None,
     )
-    disk_mimalloc_lcall_result = next(
-        (
-            r
-            for r, tag_set in zip(filtered_results, tag_sets)
-            if tag_set == {"disk", "mimalloc", "lcall"}
-        ),
-        None,
-    )
+    assert disk_mimalloc_result is not None
+
+    # disk_mimalloc_lcall_result = next(
+    #     (
+    #         r
+    #         for r, tag_set in zip(filtered_results, tag_sets)
+    #         if tag_set == {"disk", "mimalloc", "lcall"}
+    #     ),
+    #     None,
+    # )
+    # assert disk_mimalloc_lcall_result is not None
 
     disk_result = unwrap(disk_result)
     shm_result = unwrap(shm_result)
     shm_mimalloc_result = unwrap(shm_mimalloc_result)
     disk_mimalloc_result = unwrap(disk_mimalloc_result)
-    disk_mimalloc_lcall_result = unwrap(disk_mimalloc_lcall_result)
+    # disk_mimalloc_lcall_result = unwrap(disk_mimalloc_lcall_result)
+
+    # print(disk_result.name)
+    # print(shm_result.name)
+    # print(shm_mimalloc_result.name)
+    # print(disk_mimalloc_result.name)
+    # print(disk_mimalloc_lcall_result.name)
 
     # gather all results into a single dataframe
     data = []
@@ -120,14 +135,14 @@ def gather_data(
             shm_result,
             shm_mimalloc_result,
             disk_mimalloc_result,
-            disk_mimalloc_lcall_result,
         ],
-        ["disk", "shm", "shm+mimalloc", "disk+mimalloc", "disk+mimalloc+lcall"],
+        ["disk", "shm", "shm+mimalloc", "disk+mimalloc"],
     ):
         for t in r.times:
             data.append((t, label))
 
     df_plot = pd.DataFrame(data, columns=["time", "label"])
+
     return df_plot
 
 
@@ -141,7 +156,7 @@ def plot_results_single_design(
 
     palette, hue_order = (
         MAP_COLORS,
-        ["disk", "shm", "shm+mimalloc", "disk+mimalloc", "disk+mimalloc+lcall"],
+        ["disk", "shm", "shm+mimalloc", "disk+mimalloc"],
     )
 
     zorder_map = MAP_ZORDER
@@ -186,7 +201,6 @@ def build_report_single_design(
 ) -> str:
     df_plot = gather_data(exp_results, design_name)
 
-    # for each label, compute the mean, median, std, and 5% and 95% quantiles
     stats = (
         df_plot.groupby("label")["time"]
         .agg(["mean", "median", lambda x: x.quantile(0.05), lambda x: x.quantile(0.95)])
@@ -194,10 +208,6 @@ def build_report_single_design(
     )
     stats.columns = ["label", "mean", "median", "5%", "95%"]
 
-    # print(f"## Statistics for {design_name}")
-    # print(stats.to_markdown())
-
-    # now computed normalized results normalized to the disk result fore all stats
     stats_norm = stats.copy()
     stats_norm["mean"] = (
         stats_norm["mean"] / stats_norm[stats_norm["label"] == "disk"]["mean"].values[0]
@@ -213,27 +223,15 @@ def build_report_single_design(
         stats_norm["95%"] / stats_norm[stats_norm["label"] == "disk"]["95%"].values[0]
     )
 
-    # clean up this table and make it pretty as a markdown table
-    stats_norm = stats_norm.drop(columns=["label"])
     stats_norm = stats_norm.round(2)
-    stats_norm.index = [
-        "disk",
-        "shm",
-        "shm+mimalloc",
-        "disk+mimalloc",
-        "disk+mimalloc+lcall",
-    ]
 
-    # add an index label
-    stats_norm.index.name = "Method"
+    stats_norm.columns = ["Method", "Mean", "Median", "5% Quantile", "95% Quantile"]
 
-    stats_norm.columns = ["Mean", "Median", "5% Quantile", "95% Quantile"]
+    stats_norm["Method"] = stats_norm["Method"].map(MAP_LABELS)
 
-    print(f"**Results for {design_name}**")
-    print(stats_norm.to_markdown())
-    print()
+    report = f"**Results for `{design_name}`**\n{stats_norm.to_markdown(index=False)}"
 
-    return f"**Results for {design_name}**\n\n{stats_norm.to_markdown()}\n"
+    return report
 
 
 def build_stats_tests_single_design(
@@ -242,7 +240,7 @@ def build_stats_tests_single_design(
 ) -> str:
     df_plot = gather_data(exp_results, design_name)
 
-    report = f"# Statistical Analysis Report: {design_name}\n"
+    report = f"# Statistical Analysis Report: `{design_name}`\n"
 
     # test each set of valyues for normality using the Shapiro-Wilk test
 
@@ -262,9 +260,9 @@ def build_stats_tests_single_design(
     shm_times = df_plot[df_plot["label"] == "shm"]["time"]
     shm_mimalloc_times = df_plot[df_plot["label"] == "shm+mimalloc"]["time"]
     disk_mimalloc_times = df_plot[df_plot["label"] == "disk+mimalloc"]["time"]
-    disk_mimalloc_lcall_times = df_plot[df_plot["label"] == "disk+mimalloc+lcall"][
-        "time"
-    ]
+    # disk_mimalloc_lcall_times = df_plot[df_plot["label"] == "disk+mimalloc+lcall"][
+    #     "time"
+    # ]
 
     stat_shm, p_shm = mannwhitneyu(shm_times, disk_times, alternative="less")
     stat_shm_mimalloc, p_shm_mimalloc = mannwhitneyu(
@@ -273,23 +271,24 @@ def build_stats_tests_single_design(
     stat_disk_mimalloc, p_disk_mimalloc = mannwhitneyu(
         disk_mimalloc_times, disk_times, alternative="less"
     )
-    stat_disk_mimalloc_lcall, p_disk_mimalloc_lcall = mannwhitneyu(
-        disk_mimalloc_lcall_times, disk_times, alternative="less"
-    )
+    # stat_disk_mimalloc_lcall, p_disk_mimalloc_lcall = mannwhitneyu(
+    #     disk_mimalloc_lcall_times, disk_times, alternative="less"
+    # )
 
     report += "## Mann-Whitney U Test Results\n"
     report += f"- SHM < Disk: U-statistic = {stat_shm:.2f}, p-value = {p_shm:.4f}\n"
     report += f"- SHM + Mimalloc < Disk: U-statistic = {stat_shm_mimalloc:.2f}, p-value = {p_shm_mimalloc:.4f}\n"
     report += f"- Disk + Mimalloc < Disk: U-statistic = {stat_disk_mimalloc:.2f}, p-value = {p_disk_mimalloc:.4f}\n"
-    report += f"- Disk + Mimalloc + LC_ALL=C < Disk: U-statistic = {stat_disk_mimalloc_lcall:.2f}, p-value = {p_disk_mimalloc_lcall:.4f}\n"
+    # report += f"- Disk + Mimalloc + LC_ALL=C < Disk: U-statistic = {stat_disk_mimalloc_lcall:.2f}, p-value = {p_disk_mimalloc_lcall:.4f}\n"
 
     return report
 
 
 designs_to_plot = (
     ["vtr__mcnc_simple", "vtr__mcnc_big", "vtr__mcnc_big_search"]
-    # + ["vitis_hls__simple"]
-    # + ["vitis_hls__nesting"]
+    + ["vitis_hls__simple", "vitis_hls__nesting"]
+    + ["yosys__simple", "yosys__complex"]
+    + ["vivado__simple"]
 )
 
 for design_name in designs_to_plot:
@@ -298,7 +297,9 @@ for design_name in designs_to_plot:
     fig.savefig(DIR_FIGURES / f"{design_name}_execution_times.png", dpi=300)
     plt.close(fig)
 
-    build_report_single_design(exp_results, design_name)
+    report = build_report_single_design(exp_results, design_name)
+    print(report)
+    print()
 
-    stats = build_stats_tests_single_design(exp_results, design_name)
-    print(stats)
+    # stats = build_stats_tests_single_design(exp_results, design_name)
+    # print(stats)
