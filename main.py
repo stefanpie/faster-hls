@@ -596,9 +596,9 @@ if __name__ == "__main__":
 
     TOOLS_TO_TEST = [
         # "vtr",
-        "vitis_hls",
+        # "vitis_hls",
         # "yosys",
-        # "vivado",
+        "vivado",
     ]
     DESIGNS_TO_FILTER = [
         # "vtr__mcnc_big",
@@ -606,9 +606,9 @@ if __name__ == "__main__":
         # "vtr__mcnc_simple",
         # "yosys__simple",
         # "yosys__complex",
-        "vitis_hls__nesting",
-        "vitis_hls__simple",
-        # "vivado__simple",
+        # "vitis_hls__nesting",
+        # "vitis_hls__simple",
+        "vivado__simple",
     ]
     RUN_MODES_TO_TEST = [
         "disk",
